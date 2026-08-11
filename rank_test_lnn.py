@@ -9,12 +9,11 @@ from sklearn.preprocessing import StandardScaler
 from ncps.torch import CfC
 from ncps.wirings import AutoNCP
 
-# ==================== 设备设置 ====================
+# ==================== device setting====================
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-print(f"使用设备：{device}")
+print(f"device info：{device}")
 
-# ==================== 读取数据 ====================
-#DATA_PATH = 'ATMEGA_AES_v1/ATM_AES_v1_fixed_key/ASCAD_data/ASCAD_databases/ASCAD_desync50.h5'
+# ==================== data loading ====================
 DATA_PATH = 'ATMEGA_AES_v1/ATM_AES_v1_fixed_key/ASCAD_data/ASCAD_databases/ASCAD.h5'
 with h5py.File(DATA_PATH, 'r') as f:
     x_train  = np.array(f['Profiling_traces/traces'], dtype=np.int8).astype(np.float32)
@@ -23,18 +22,18 @@ with h5py.File(DATA_PATH, 'r') as f:
 
 correct_key = metadata['key'][0][2]
 plaintexts  = metadata['plaintext'][:, 2]
-print(f"正确密钥字节：{correct_key}")
+print(f"correct key byte：{correct_key}")
 
-# ==================== 标准化 ====================
+# ==================== Standardization ====================
 scaler = StandardScaler()
 scaler.fit(x_train)
 x_test = scaler.transform(x_test)
 
-# # ==================== 加高斯噪声 ====================
-noise_level = 2.0  # 可以改成 0.1, 0.5, 1.0 测试不同强度
+# # ==================== Gaussian Noise ====================
+noise_level = 2.0  #  0.1, 0.5, 1.0 
 #np.random.seed(0)
 x_test = x_test + np.random.normal(0, noise_level, x_test.shape)
-x_test = x_test.astype(np.float32)  # 加这行
+x_test = x_test.astype(np.float32) 
 # ==================== AES S-box ====================
 AES_Sbox = np.array([
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
@@ -55,8 +54,7 @@ AES_Sbox = np.array([
     0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
 ], dtype=np.uint8)
 
-# ==================== LNN 模型定义 ====================
-#原版lnn模型
+# ==================== LNN model ====================
 class LNN_SCA(nn.Module):
     def __init__(self):
         super().__init__()
@@ -73,40 +71,7 @@ class LNN_SCA(nn.Module):
         out, _ = self.cfc(x)
         return self.classifier(out[:, -1, :])
 
-#全连接层换成卷积层 再接cfc
-# class LNN_SCA(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         self.input_proj = nn.Sequential(
-#             nn.Conv1d(1, 32, kernel_size=11, padding=5),
-#             nn.ReLU(),
-#             nn.Conv1d(32, 64, kernel_size=11, padding=5),
-#             nn.ReLU(),
-#             nn.AdaptiveAvgPool1d(1)
-#         )
-#         wiring = AutoNCP(64, 32)
-#         self.cfc = CfC(64, wiring, batch_first=True)
-#         self.classifier = nn.Sequential(nn.Linear(32, 256))
-#     def forward(self, x):
-#         x = x.permute(0, 2, 1)
-#         x = self.input_proj(x)
-#         x = x.permute(0, 2, 1)
-#         out, _ = self.cfc(x)
-#         return self.classifier(out[:, -1, :])
-
-# 700步模型（CfC直接吃700步，每步1维特征）
-# class LNN_SCA(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         wiring = AutoNCP(64, 32)
-#         self.cfc = CfC(1, wiring, batch_first=True)
-#         self.classifier = nn.Linear(32, 256)
-#     def forward(self, x):
-#         # x: (batch, 700, 1)
-#         out, _ = self.cfc(x)
-#         return self.classifier(out[:, -1, :])
-
-# ==================== 原版 Rank 计算函数 ====================
+# ====================  Rank  ====================
 def rank(predictions, plaintexts, real_key, min_trace_idx, max_trace_idx, last_key_bytes_proba):
     if len(last_key_bytes_proba) == 0:
         key_bytes_proba = np.zeros(256)
@@ -143,33 +108,27 @@ def full_ranks(predictions, plaintexts, real_key, num_traces=500, rank_step=10):
         f_ranks[i] = [t, real_key_rank]
     return f_ranks
 
-# ==================== 加载模型并预测 ====================
+# ==================== Model Loading and Prediction ====================
 num_traces = 2000
 
-print("\n加载 LNN 模型...")
+print("\nloading LNN model...")
 lnn_model = LNN_SCA().to(device)
 lnn_model.load_state_dict(torch.load('lnn_model/lnn_baseline.pth', map_location=device))
-#lnn_model.load_state_dict(torch.load('lnn_model/lnn_700steps.pth', map_location=device))
-#lnn_model.load_state_dict(torch.load('lnn_model/lnn_700steps_v2.pth', map_location=device))
 
 x_input = torch.tensor(x_test[:num_traces].reshape(-1, 700, 1)).to(device)
 with torch.no_grad():
     predictions = torch.softmax(lnn_model(x_input), dim=1).cpu().numpy()
 
-print("计算 Rank...")
+print("count Rank...")
 ranks = full_ranks(predictions, plaintexts, correct_key, num_traces=num_traces, rank_step=10)
 
 x = [ranks[i][0] for i in range(ranks.shape[0])]
 y = [ranks[i][1] for i in range(ranks.shape[0])]
 
-print(f"LNN 最终 Rank: {y[-1]}")
+print(f"LNN final Rank: {y[-1]}")
 
-# ==================== 画图 ====================
+# ==================== drawing ====================
 MODEL_FILE = 'lnn_model/lnn_baseline.pth'
-# DATA_FILE = 'ATMEGA_AES_v1/ATM_AES_v1_fixed_key/ASCAD_data/ASCAD_databases/ASCAD.h5'
-
-#MODEL_FILE = 'lnn_model/lnn_700steps.pth'
-#MODEL_FILE = 'lnn_model/lnn_700steps_v2.pth'
 DATA_FILE = 'ATMEGA_AES_v1/ATM_AES_v1_fixed_key/ASCAD_data/ASCAD_databases/ASCAD.h5'
 
 first_zero = next((x[i] for i in range(len(y)) if y[i] == 0), None)
@@ -188,22 +147,17 @@ if first_zero is not None:
 
 
 plt.tight_layout()
-plt.savefig('lnn_model/test4.png')
 
-# plt.savefig('lnn_model/rank_lnn_StandardScaler.png')
-# print("图已保存到 lnn_model/rank_lnn_StandardScaler.png")
 
-# plt.savefig('lnn_model/lnn_700steps.png')
-# print("图已保存到 lnn_model/lnn_700steps.png")
-# plt.savefig('lnn_model/lnn_700steps_v2.png')
-# print("图已保存到 lnn_model/lnn_700steps_v2.png")
+plt.savefig('lnn_model/rank_lnn_StandardScaler.png')
+print("picuture saved as lnn_model/rank_lnn_StandardScaler.png")
 
 # plt.savefig('lnn_model/rank_lnn_noisy_0.5.png')
-# print("图已保存到 lnn_model/rank_lnn_noisy_0.5.png")
+# print("picture saved as lnn_model/rank_lnn_noisy_0.5.png")
 
 
 # plt.savefig('lnn_model/rank_lnn_noisy_1.0.png')
-# print("图已保存到 lnn_model/rank_lnn_noisy_1.0.png")
+# print("picture saved as lnn_model/rank_lnn_noisy_1.0.png")
 
 # plt.savefig('lnn_model/rank_lnn_noisy_2.0.png')
-# print("图已保存到 lnn_model/rank_lnn_noisy_2.0.png")
+# print("picture saved as lnn_model/rank_lnn_noisy_2.0.png")
