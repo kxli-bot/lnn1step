@@ -123,8 +123,8 @@ for epoch in range(100):
  print("\nmodel has been saved at lnn_model/lnn_baseline.pth")
 # ==================== training curve ====================
 plt.figure(figsize=(8, 4))
-plt.plot(train_acc_list, label='训练准确率')
-plt.plot(test_acc_list,  label='测试准确率')
+plt.plot(train_acc_list, label='training accuracy')
+plt.plot(test_acc_list,  label='test accuracy')
 plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
 plt.title('LNN training curve')
